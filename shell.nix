@@ -8,6 +8,7 @@ let
     ps.haskell-language-server
     ps.cabal-install
     ps.yaml
+    ps.parsec
   ]);
 in pkgs.mkShell {
   buildInputs = [ ghc ];

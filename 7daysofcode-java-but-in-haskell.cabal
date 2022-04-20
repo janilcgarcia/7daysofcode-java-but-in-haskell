@@ -29,7 +29,7 @@ executable 7daysofcode-java-but-in-haskell
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
-    -- other-modules:
+    other-modules: JSONParser
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
@@ -45,5 +45,6 @@ executable 7daysofcode-java-but-in-haskell
                     , containers
                     , yaml
                     , vector
+                    , parsec
     hs-source-dirs:   app
     default-language: Haskell2010

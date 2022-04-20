@@ -19,6 +19,13 @@ import Control.Lens ((^.), Prism', each)
 import Data.Aeson.Lens (key, _Array, _JSON, AsJSON(..), values)
 
 import qualified Data.Vector as V
+import qualified JSONParser as JP
+
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
+import qualified Data.ByteString.Lazy as LBS
+
+import qualified Data.Map as M
 
 newtype IMDBConfig = IMDBConfig { apiKey :: Text }
                    deriving (Show, Eq, Generic)
@@ -57,16 +64,6 @@ data Movie = Movie { id :: String
                    }
            deriving (Show, Eq)
 
-instance FromJSON Movie where
-  parseJSON (Object v) =
-    Movie <$> v .: "id" <*> v .: "rank" <*> v .: "title" <*>
-    v .: "fullTitle" <*> v .: "year" <*> v .: "image" <*> v .: "crew" <*>
-    v .: "imDbRating" <*> v .: "imDbRatingCount"
-
-  parseJSON invalid = prependFailure
-    "a Movie must be an object"
-    (typeMismatch "Object" invalid)
-
 main :: IO ()
 main = do
   config <- loadConfig
@@ -82,11 +79,52 @@ main = do
   where
     run config = do
       let apiKey = T.unpack $ getApiKey config
-      r <- asJSON =<< get (top250MoviesUrl apiKey Nothing) :: IO (Response Value)
+      r <- get $ top250MoviesUrl apiKey Nothing
 
-      let items = r ^. responseBody . key "items" . _Array
-          movies :: Result (V.Vector Movie) = mapM fromJSON items
+      let bodyText = TE.decodeUtf8 . LBS.toStrict $ r ^. responseBody
+          parsedBody = JP.parseJson bodyText
 
-      print movies
+      case parsedBody of
+        Left error ->
+          putStrLn "Parsing error..."
+
+        Right result -> do
+          printResult result "Title" "title"
+          printResult result "ID" "id"
+          printResult result "Rank" "rank"
+          printResult result "FullTitle" "fullTitle"
+          printResult result "Year" "year"
+          printResult result "Image" "image"
+          printResult result "Crew" "crew"
+          printResult result "IMDB Rating" "imDbRating"
+          printResult result "IMDB Rating COunt" "imDbRatingCount"
+          
+    printResult (JP.JObject m) name key =
+      let result = m M.! "items" in
+      case extractByKey result key of
+        Left message ->
+          TIO.putStrLn $ T.append "Can't find key: " message
+        Right entries -> do
+          TIO.putStrLn $ T.snoc name ':'
+          mapM_ TIO.putStrLn entries
+          TIO.putStrLn ""
+
+    printResult _ _ _ = putStrLn "Invalid result returned"
+
+    key :: Text -> JP.JSON -> Maybe Text
+    key k (JP.JObject m) = case M.lookup k m of
+      Just (JP.JString t) -> Just t
+      _ -> Nothing
+
+    key _ _ = Nothing
+
+    extractByKey :: JP.JSON -> Text -> Either Text [Text]
+    extractByKey (JP.JArray objects) k =
+      let findKeyOrError json = case key k json of
+            Just value -> Right value
+            Nothing -> Left $ T.concat ["Can't find ", k, " at object"]
+      in mapM findKeyOrError objects
+
+    extractByKey _ _ = Left "Invalid object type"
 
 
