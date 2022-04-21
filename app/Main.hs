@@ -1,68 +1,59 @@
-{-# LANGUAGE DeriveGeneric, OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
 import Network.Wreq
-import Data.Yaml (ParseException, decodeFileEither)
-import Data.Aeson (FromJSON, parseJSON, Value(..), (.:))
-import Data.Aeson.Types (prependFailure, typeMismatch
-                        , Parser(..), Result
-                        , fromJSON)
-
-import Data.Text (Text(..))
-import qualified Data.Text as T
 
 import GHC.Generics (Generic)
 
 import System.IO (hPutStrLn, stderr, hPrint)
 
-import Control.Lens ((^.), Prism', each)
-import Data.Aeson.Lens (key, _Array, _JSON, AsJSON(..), values)
+import Control.Lens ((^.))
 
 import qualified Data.Vector as V
-import qualified JSONParser as JP
 
+import Data.Text (Text(..))
+import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import qualified Data.ByteString.Lazy as LBS
 
 import qualified Data.Map as M
 
-newtype IMDBConfig = IMDBConfig { apiKey :: Text }
-                   deriving (Show, Eq, Generic)
+import Config
+import qualified JSONParser as JP
 
-newtype Config = Config { imdb :: IMDBConfig }
-               deriving (Show, Eq, Generic)
+-- |Movie model
+data Movie = Movie { title :: Text
+                   , urlImage :: Text
+                   , year :: Int
+                   , rating :: Double
+                   }
+           deriving (Show, Eq)
 
-instance FromJSON IMDBConfig where
-  parseJSON (Object v) = IMDBConfig <$> v .: "api-key"
-  parseJSON invalid = prependFailure
-    "imdb must be an object with an api-key field"
-    (typeMismatch "Object" invalid)
-    
-instance FromJSON Config  
-
-loadConfig :: IO (Either ParseException Config)
-loadConfig = decodeFileEither "config.yaml"
-
-getApiKey :: Config -> Text
-getApiKey = apiKey . imdb
-
+-- |Get the API URL for the top 250 movies on IMDB takes an API key and can
+-- |optionally take a lang parameter
 top250MoviesUrl :: String -> Maybe String -> String
 top250MoviesUrl apiKey lang =
   let langSegment = maybe "" (++ "/") lang
   in "https://imdb-api.com/" ++ langSegment  ++ "API/Top250Movies/" ++ apiKey
 
-data Movie = Movie { id :: String
-                   , rank :: String
-                   , title :: String
-                   , fullTitle :: String
-                   , year :: String
-                   , image :: String
-                   , crew :: String
-                   , imdbRating :: String
-                   , imdbRatingCount :: String
-                   }
-           deriving (Show, Eq)
+-- |Lookup a key on a JSON. The JSON must be a JObject and must contain a string
+-- |value or it will fail.
+keyLookup :: Text -> JP.JSON -> Maybe Text
+keyLookup k (JP.JObject m) = case M.lookup k m of
+  Just (JP.JString t) -> Just t
+  _ -> Nothing
+keyLookup _ _ = Nothing
+
+-- |Parse movie from the API Json response.
+parseMovie :: JP.JSON -> Maybe Movie
+parseMovie json =
+  let attr = flip keyLookup json
+  in Movie <$>
+     attr "title" <*>
+     attr "image" <*>
+     fmap (read . T.unpack) (attr "year") <*>
+     fmap (read . T.unpack) (attr "imDbRating")
 
 main :: IO ()
 main = do
@@ -89,42 +80,20 @@ main = do
           putStrLn "Parsing error..."
 
         Right result -> do
-          printResult result "Title" "title"
-          printResult result "ID" "id"
-          printResult result "Rank" "rank"
-          printResult result "FullTitle" "fullTitle"
-          printResult result "Year" "year"
-          printResult result "Image" "image"
-          printResult result "Crew" "crew"
-          printResult result "IMDB Rating" "imDbRating"
-          printResult result "IMDB Rating COunt" "imDbRatingCount"
-          
-    printResult (JP.JObject m) name key =
-      let result = m M.! "items" in
-      case extractByKey result key of
-        Left message ->
-          TIO.putStrLn $ T.append "Can't find key: " message
-        Right entries -> do
-          TIO.putStrLn $ T.snoc name ':'
-          mapM_ TIO.putStrLn entries
-          TIO.putStrLn ""
+          case flip traverseItems parseMovie $ result of
+            Just items -> mapM_ print items
+            Nothing -> pure ()
 
-    printResult _ _ _ = putStrLn "Invalid result returned"
+    -- |Traverse items on a JSON object and collect a list of f applied to all
+    -- |traversed items
+    traverseItems :: JP.JSON -> (JP.JSON -> Maybe a) -> Maybe [a]
+    traverseItems (JP.JObject m) f = do
+      itemsJson <- M.lookup "items" m
+      items <- case itemsJson of
+        JP.JArray items -> Just items
+        _ -> Nothing
 
-    key :: Text -> JP.JSON -> Maybe Text
-    key k (JP.JObject m) = case M.lookup k m of
-      Just (JP.JString t) -> Just t
-      _ -> Nothing
-
-    key _ _ = Nothing
-
-    extractByKey :: JP.JSON -> Text -> Either Text [Text]
-    extractByKey (JP.JArray objects) k =
-      let findKeyOrError json = case key k json of
-            Just value -> Right value
-            Nothing -> Left $ T.concat ["Can't find ", k, " at object"]
-      in mapM findKeyOrError objects
-
-    extractByKey _ _ = Left "Invalid object type"
+      mapM f items
+    traverseItems _ _ = Nothing
 
 

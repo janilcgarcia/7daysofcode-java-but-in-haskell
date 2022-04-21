@@ -1,5 +1,9 @@
 {-# LANGUAGE OverloadedStrings, FlexibleContexts #-}
-module JSONParser where
+module JSONParser
+  ( parseJson
+  , JSON(..)
+  )
+where
 
 import Data.Map (Map)
 import Data.Text (Text, pack)
@@ -30,5 +34,6 @@ jobject =
 jsonValue :: Stream s m Char => ParsecT s u m JSON
 jsonValue = fmap JString jstring <|> fmap JArray jarray <|> fmap JObject jobject
 
+-- |Parse JSON from text
 parseJson :: Text -> Either ParseError JSON
 parseJson = parse jsonValue "Json document"

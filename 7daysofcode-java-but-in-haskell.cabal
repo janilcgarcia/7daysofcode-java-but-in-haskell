@@ -30,6 +30,7 @@ executable 7daysofcode-java-but-in-haskell
 
     -- Modules included in this executable, other than Main.
     other-modules: JSONParser
+                 , Config
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
