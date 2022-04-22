@@ -47,5 +47,8 @@ executable 7daysofcode-java-but-in-haskell
                     , yaml
                     , vector
                     , parsec
+                    , warp
+                    , wai
+                    , scotty
     hs-source-dirs:   app
     default-language: Haskell2010

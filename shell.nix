@@ -9,6 +9,9 @@ let
     ps.cabal-install
     ps.yaml
     ps.parsec
+    ps.warp
+    ps.wai
+    ps.scotty
   ]);
 in pkgs.mkShell {
   buildInputs = [ ghc ];
