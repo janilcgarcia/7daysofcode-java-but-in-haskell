@@ -25,20 +25,30 @@ import qualified Data.Map as M
 import Config
 import qualified JSONParser as JP
 
--- |Movie model
-data Movie = Movie { title :: Text
-                   , urlImage :: Text
-                   , year :: Int
-                   , rating :: Double
-                   }
-           deriving (Show, Eq)
+import Text.Parsec (ParseError)
+
+import Data.List (sortOn)
+
+-- |A content model
+data ContentType = Movie deriving (Show, Eq)
+data Content = Content { title :: Text
+                       , urlImage :: Text
+                       , year :: Int
+                       , rating :: Double
+                       , cType :: ContentType
+                       }
+             deriving (Show, Eq)
+
+data APIError = MalformedJSON
+              | InvalidBody
+              deriving (Show, Eq)
 
 -- |Get the API URL for the top 250 movies on IMDB takes an API key and can
 -- |optionally take a lang parameter
-top250MoviesUrl :: String -> Maybe String -> String
+top250MoviesUrl :: Text -> Maybe Text -> Text
 top250MoviesUrl apiKey lang =
-  let langSegment = maybe "" (++ "/") lang
-  in "https://imdb-api.com/" ++ langSegment  ++ "API/Top250Movies/" ++ apiKey
+  let langSegment = maybe "" (`T.append` "/") lang
+  in T.concat ["https://imdb-api.com/", langSegment, "API/Top250Movies/", apiKey]
 
 -- |Lookup a key on a JSON. The JSON must be a JObject and must contain a string
 -- |value or it will fail.
@@ -49,36 +59,37 @@ keyLookup k (JP.JObject m) = case M.lookup k m of
 keyLookup _ _ = Nothing
 
 -- |Parse movie from the API Json response.
-parseMovie :: JP.JSON -> Maybe Movie
+parseMovie :: JP.JSON -> Maybe Content
 parseMovie json =
   let attr = flip keyLookup json
-  in Movie <$>
+  in Content <$>
      attr "title" <*>
      attr "image" <*>
      fmap (read . T.unpack) (attr "year") <*>
-     fmap (read . T.unpack) (attr "imDbRating")
+     fmap (read . T.unpack) (attr "imDbRating") <*>
+     pure Movie
 
-htmlBase :: Text -> Text
-htmlBase contents = T.intercalate "\n"
+htmlBase :: Text -> Text -> Text
+htmlBase title body = T.intercalate "\n"
   [ "<!DOCTYPE html>"
   , "<html>"
   , "  <head>"
   , "    <meta charset=\"utf-8\" />"
-  , "    <title>Top 250 IMDB movies</title>"
+  , T.concat ["    <title>", title, "</title>"]
   , "    <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css\" />"
   , "  </head>"
   , "  <body>"
   , "    <div class=\"container\">"
-  , "      <h1>Top 250 Movies on IMDB</h1>"
-  , contents
+  , T.concat ["      <h1>", title, "</h1>"]
+  , body
   , "    </div>"
   , "  <script src=\"https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js\"></script>"
   , "  </bdoy>"
   , "</html>"
   ]
 
-htmlMovieSection :: Movie -> Text
-htmlMovieSection (Movie title urlImage year rating) =
+htmlMovieSection :: Content -> Text
+htmlMovieSection (Content title urlImage year rating _) =
   let ratingText = T.pack (printf "%.2f" rating :: String)
   in T.intercalate "\n"
   [ "<div class=\"card mb-3 mt-2\">"
@@ -103,11 +114,31 @@ htmlMovieSection (Movie title urlImage year rating) =
   , "</div>"
   ]
 
-htmlMovieSections :: [Movie] -> Text
+htmlMovieSections :: [Content] -> Text
 htmlMovieSections = T.intercalate "\n" . map htmlMovieSection
 
-html :: [Movie] -> Text
-html = htmlBase . htmlMovieSections
+htmlForMovies :: [Content] -> Text
+htmlForMovies = htmlBase "Top 250 Movies" . htmlMovieSections
+
+toMaybe :: Either a b -> Maybe b
+toMaybe (Right b) = Just b
+toMaybe _ = Nothing
+
+leftMap :: (e -> e') -> Either e a -> Either e' a
+leftMap _ (Right r) = Right r
+leftMap f (Left e) = Left $ f e
+
+rightOr :: e -> Maybe a -> Either e a
+rightOr _ (Just r) = Right r
+rightOr e Nothing = Left e
+
+getTopMovies :: Text -> IO (Either APIError [Content])
+getTopMovies key = do
+  r <- get . T.unpack $ top250MoviesUrl key Nothing
+
+  let json = JP.parseJson . TE.decodeUtf8 . LBS.toStrict $ r ^. responseBody
+  pure $ leftMap (const InvalidBody) json >>=
+    rightOr MalformedJSON . flip traverseItems parseMovie
 
 main :: IO ()
 main = do
@@ -123,37 +154,40 @@ main = do
 
   where
     run config = do
-      let apiKey = T.unpack $ getApiKey config
-      r <- get $ top250MoviesUrl apiKey Nothing
-
-      let bodyText = TE.decodeUtf8 . LBS.toStrict $ r ^. responseBody
-          parsedBody = JP.parseJson bodyText
+      let apiKey = getApiKey config
+      parsedBody <- getTopMovies apiKey
 
       case parsedBody of
         Left error ->
-          putStrLn "Parsing error..."
+          putStrLn $ "Request error: " ++ show error
 
-        Right result -> do
-          case flip traverseItems parseMovie $ result of
-            Just items -> runServer items
-            Nothing -> pure ()
+        Right result ->
+          runServer result
 
     runServer movies =
-      let index = TL.fromStrict . html $ movies
-      in W.scotty 3000 $
+      let index f = TL.fromStrict . htmlForMovies $ sortOn f movies
+
+      in W.scotty 3000 $ do
          W.get "/" $ do
-           W.html index
+           W.redirect "/rating"
 
-    -- |Traverse items on a JSON object and collect a list of f applied to all
-    -- |traversed items
-    traverseItems :: JP.JSON -> (JP.JSON -> Maybe a) -> Maybe [a]
-    traverseItems (JP.JObject m) f = do
-      itemsJson <- M.lookup "items" m
-      items <- case itemsJson of
-        JP.JArray items -> Just items
-        _ -> Nothing
+         W.get "/:order" $ do
+           order :: Text <- W.param "order"
 
-      mapM f items
-    traverseItems _ _ = Nothing
+           case order of
+             "title" -> W.html $ index title
+             "year" -> W.html $ index year
+             _ -> W.html $ index (((-1.0) *) . rating)
 
+-- |Traverse items on a JSON object and collect a list of f applied to all
+-- |traversed items
+traverseItems :: JP.JSON -> (JP.JSON -> Maybe a) -> Maybe [a]
+traverseItems (JP.JObject m) f = do
+  itemsJson <- M.lookup "items" m
+  items <- case itemsJson of
+    JP.JArray items -> Just items
+    _ -> Nothing
+
+  mapM f items
+traverseItems _ _ = Nothing
 
